@@ -27,7 +27,7 @@ monitor <- function(
    mail_to = c("augustofadel@gmail.com")                            #lista destinatarios
 ) {
    
-   t_start_hold <- t_start %>% hms() - format(Sys.time(), "%X") %>% hms()
+   t_start_hold <- t_start %>% hms() - Sys.time() %>% format("%X") %>% hms()
    if (t_start_hold %>% as.numeric() > 0) {
       cat("\n", format(Sys.time(), "%X"), ": aguardando abertura... ")
       Sys.sleep(t_start_hold %>% as.numeric())
@@ -42,6 +42,8 @@ monitor <- function(
       row.names = cod
    )
    set_points <- set_points[order(row.names(set_points)),]
+   
+   t_start_collect <- Sys.time() %>% format("%X")
    
    while (Sys.time() %>% format("%X") %>% hms() < t_stop %>% hms()) {
       t <- system.time({
@@ -80,7 +82,7 @@ monitor <- function(
       })#end system.time
       
       if (t_hold > t[[3]]) {
-         cat("\n", format(Sys.time(), "%X"), ": aguardando... ")
+         cat("\n", Sys.time() %>% format("%X"), "> aguardando... ")
          Sys.sleep(t_hold - t[[3]])
          cat("concluido.\n")
       } #end if
@@ -106,6 +108,7 @@ monitor <- function(
    } else {
       monitor()
    } #end if-else
+   cat("\n", Sys.time() %>% format("%X"), "> Encerrada coleta iniciada em ", t_start_collect, ".")
    
 } #end function
 
