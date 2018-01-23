@@ -89,7 +89,7 @@ monitor <- function(
    } #end while
    
    if (format(Sys.time(), "%X") %>% hms() >= t_stop %>% hms()) {
-      txt <- daily_summary()
+      txt <- daily_summary(dat, cod)
       txt <- paste0(txt, '\n\nObs.: O horarios de maximo e minimo sao aproximados (atraso de ate 5 minutos).')
       for (i in mail_to) {
          msg <-
@@ -108,7 +108,7 @@ monitor <- function(
    } else {
       monitor()
    } #end if-else
-   cat("\n", Sys.time() %>% format("%X"), "> Encerrada coleta iniciada em ", t_start_collect, ".")
+   cat("\n", Sys.time() %>% format("%X"), " > Encerrada coleta iniciada em ", t_start_collect, ".", sep = "")
    
 } #end function
 
@@ -127,7 +127,7 @@ data_load <- function(
          stop("Arquivo com dados de ", format(Sys.time(), "%d/%m/%Y"), 
               " encontrado (", format(Sys.time(), "%X"), ").")
       } #end if
-      dat <- readRDS(arq)
+      dat <- readRDS(file.path(data_path, data_file))
    } #end if-else
    return(dat)
 } #end function
@@ -240,15 +240,15 @@ daily_summary <- function(
    cod = cod
 ) {
    txt <- NULL
-   for (i in cod) {
+   for (i in cod %>% str_sub(1, 5)) {
       aux <- dat %>% filter(Symbol == i)
       min_i <- aux[which.min(aux$Low),]
       max_i <- aux[which.max(aux$High),]
       txt_tmp <- c(
          paste0(i, ': ', aux$Open %>% tail(1)), 
-         paste0(min_i$Low, ' (', min_i$`Trade Time` %>% format("%X"), ')'),
-         paste0(max_i$High, ' (', max_i$`Trade Time` %>% format("%X"), ')'),
-         paste0(aux$Last %>% tail(1), ' (', aux$`Trade Time` %>% tail(1) %>% format("%X"), ')\n')
+         paste0('MIN (', min_i$Low, "@", min_i$`Trade Time` %>% format("%X"), ')'),
+         paste0('MAX (', max_i$High, "@", max_i$`Trade Time` %>% format("%X"), ')'),
+         aux$Last %>% tail(1)
       )
       if (max_i$`Trade Time` %>% format("%X") %>% hms() < min_i$`Trade Time` %>% format("%X") %>% hms()) {
          txt_tmp <- txt_tmp[c(1, 3, 2, 4)]
@@ -256,6 +256,7 @@ daily_summary <- function(
       txt_tmp <- txt_tmp %>% paste(collapse = ', ')
       txt <- paste(txt, txt_tmp, sep = '\n')
    }
+   return(txt)
 } #end function
 
 # PACKAGES ----------------------------------------------------------------
