@@ -1,177 +1,271 @@
 
-# INIT --------------------------------------------------------------------
+# MAIN FUNCTION -----------------------------------------------------------
+
+monitor <- function(
+   t_start = "09:45:00",                                            #horario inicio monitoramento
+   t_stop = "18:30:00",                                             #horario fim monitoramento
+   t_hold = 60 * 5,                                                 #intervalo entre consultas (em segundos)
+   data_path = "~/!filesync/stock_monitor_data",                    #caminho arquivos (dados e log)
+   data_file = paste0(today() %>% format("%y%m%d"), ".rds"),        #nome arquivo dados
+   data_log = paste0("log_", today() %>% format("%y%m%d"), ".txt"), #nome arquivo log
+   cod = c(                                                         #codigos dos ativos (symbols)
+      "CSNA3.SA", 
+      "USIM5.SA",
+      "GOAU4.SA",
+      "JBSS3.SA",
+      
+      "GGBR4.SA", 
+      "PETR4.SA",
+      "ELET3.SA",
+      "BRFS3.SA",
+      "EMBR3.SA"
+   ),
+   set_up = 2,                                                      #set point de alta
+   set_down = 2,                                                    #set point de baixa
+   set_delta = 1,                                                   #set alerta 'continuo'
+   mail_from = "stockadvisor.alfa@gmail.com",                       #email envio
+   mail_to = c("augustofadel@gmail.com")                            #lista destinatarios
+) {
+   
+   t_start_hold <- t_start %>% hms() - format(Sys.time(), "%X") %>% hms()
+   if (t_start_hold %>% as.numeric() > 0) {
+      cat("\n", format(Sys.time(), "%X"), ": aguardando abertura... ")
+      Sys.sleep(t_start_hold %>% as.numeric())
+      cat("concluido.\n")
+   } #end if
+   
+   dat <- data_load(data_path, data_file, t_start)
+
+   set_points <- data.frame(
+      up = rep(set_up, length(cod)),
+      down = rep(set_down, length(cod)),
+      row.names = cod
+   )
+   set_points <- set_points[order(row.names(set_points)),]
+   
+   while (Sys.time() %>% format("%X") %>% hms() < t_stop %>% hms()) {
+      t <- system.time({
+         dat <- try(
+            data_bind(cod, dat, data_path, data_log),
+            silent = T,
+            outFile = file.path(data_path, data_log)
+         )
+         if (class(dat) == "try-error") {
+            break
+         } #end if
+         
+         news <- alert(dat, set_points, set_delta)
+         txt <- news$txt
+         set_points <- news$set_points
+         if (!is.null(txt)) {
+            txt <- paste0(txt, "\n\nObs.: Informacoes com atraso de 15 minutos.")
+            for (i in mail_to) {
+               msg <-
+                  mime() %>% 
+                  to(i) %>% 
+                  from(mail_from) %>% 
+                  subject("ALERTA") %>% 
+                  text_body(txt) %>% 
+                  as.character()
+               try(
+                  send_message(msg),
+                  silent = T,
+                  outFile = file.path(data_path, data_log)
+               )
+            } #end for
+         } #end if
+         
+         dat <- data_clean(dat, data_path, data_file)
+         saveRDS(dat, file.path(data_path, data_file))
+      })#end system.time
+      
+      if (t_hold > t[[3]]) {
+         cat("\n", format(Sys.time(), "%X"), ": aguardando... ")
+         Sys.sleep(t_hold - t[[3]])
+         cat("concluido.\n")
+      } #end if
+   } #end while
+   
+   if (format(Sys.time(), "%X") %>% hms() >= t_stop %>% hms()) {
+      txt <- daily_summary()
+      txt <- paste0(txt, '\n\nObs.: O horarios de maximo e minimo sao aproximados (atraso de ate 5 minutos).')
+      for (i in mail_to) {
+         msg <-
+            mime() %>% 
+            to(i) %>% 
+            from(mail_from) %>% 
+            subject(paste("Informe diario:", format(Sys.time(), "%d/%m/%Y"))) %>% 
+            text_body(txt) %>% 
+            as.character()
+         try(
+            send_message(msg),
+            silent = T,
+            outFile = file.path(data_path, data_log)
+         )
+      } #end for
+   } else {
+      monitor()
+   } #end if-else
+   
+} #end function
+
+
+# AUX FUNCTIONS -----------------------------------------------------------
+
+data_load <- function(
+  data_path = data_path,
+  data_file = data_file,
+  t_start = t_start
+) {
+   if (!file.exists(file.path(data_path, data_file))) {
+      dat <- NULL
+   } else {
+      if (t_start %>% hms() > format(Sys.time(), "%X") %>% hms()) {
+         stop("Arquivo com dados de ", format(Sys.time(), "%d/%m/%Y"), 
+              " encontrado (", format(Sys.time(), "%X"), ").")
+      } #end if
+      dat <- readRDS(arq)
+   } #end if-else
+   return(dat)
+} #end function
+
+data_bind <- function(
+   cod = cod,
+   dat = dat,
+   data_path = data_path,
+   data_log = data_log,
+   loop_lim = 60
+) {
+   tmp <- NULL
+   i <- 0
+   while(class(tmp) != "data.frame" & i <= loop_lim) {
+      i <- i + 1
+      tmp <- try(
+         getQuote(cod),
+         silent = T,
+         outFile = file.path(data_path, data_log)
+      )
+      if (class(tmp) == "try-error") {
+         Sys.sleep(10)
+      } #end if
+   } #end while
+   tmp <- cbind(Symbol = rownames(tmp) %>% str_sub(1, 5), tmp)
+   rownames(tmp) <- NULL
+   dat <- rbind(dat, tmp)
+   return(dat)
+} #end function
+
+data_clean <- function(
+   dat = dat,
+   data_path = data_path,
+   data_file = data_file
+) {
+   dat <- dat[!duplicated(dat),]
+   t_last_quote <- 
+      dat$`Trade Time` %>% 
+      format("%d%m%Y") %>% 
+      dmy() %>% 
+      tapply(dat$Symbol, max) %>% 
+      as_date() %>% 
+      format("%d%m%Y") %>% 
+      dmy()
+   if (all(t_last_quote == today())) {
+      dat <- 
+         dat %>% 
+         filter(dat$`Trade Time` %>% format("%d%m%Y") %>% dmy() == today())
+   } #end if
+   return(dat)
+} #end function
+
+alert <- function(
+   dat = dat,
+   set_points = set_points,
+   set_delta = set_delta
+) {
+   txt <- NULL
+   n <- nrow(set_points)
+   last_quote <-
+      dat %>% 
+      tail(n)
+   ord <- order(last_quote$Symbol)
+   last_quote <- last_quote[ord,]
+   up <- last_quote$`% Change` >= set_points$up & last_quote$`Trade Time` %>% format("%d%m%Y") %>% dmy() == today()
+   set_points$up[up] <- last_quote$`% Change`[up] %>% floor() + set_delta
+   down <- last_quote$`% Change` <= set_points$down * -1  & last_quote$`Trade Time` %>% format("%d%m%Y") %>% dmy() == today()
+   set_points$down[down] <- last_quote$`% Change`[down] %>% abs() %>% floor() + set_delta
+   if (any(up)) {
+      txt <- 
+         paste(
+            txt, 
+            paste0(
+               last_quote$Symbol[up], 
+               " (", 
+               last_quote$Last[up],
+               ", ",
+               last_quote$`% Change`[up] %>% round(2), 
+               "%, ", 
+               last_quote$`Trade Time`[up] %>% format("%X"), 
+               ")"
+            ) %>% 
+               paste(collapse = "\n"), 
+            sep = "\n"
+         )
+   } #end if
+   if (any(down)) {
+      txt <- 
+         paste(
+            txt, 
+            paste0(
+               last_quote$Symbol[down], 
+               " (", 
+               last_quote$Last[down], 
+               ", ",
+               last_quote$`% Change`[down] %>% round(2), 
+               "%, ", 
+               last_quote$`Trade Time`[down] %>% format("%X"), 
+               ")"
+            ) %>% 
+               paste(collapse = "\n"), 
+            sep = "\n"
+         )
+   } #end if
+   return(list(txt = txt, set_points = set_points))
+} #end function
+
+daily_summary <- function(
+   dat = dat,
+   cod = cod
+) {
+   txt <- NULL
+   for (i in cod) {
+      aux <- dat %>% filter(Symbol == i)
+      min_i <- aux[which.min(aux$Low),]
+      max_i <- aux[which.max(aux$High),]
+      txt_tmp <- c(
+         paste0(i, ': ', aux$Open %>% tail(1)), 
+         paste0(min_i$Low, ' (', min_i$`Trade Time` %>% format("%X"), ')'),
+         paste0(max_i$High, ' (', max_i$`Trade Time` %>% format("%X"), ')'),
+         paste0(aux$Last %>% tail(1), ' (', aux$`Trade Time` %>% tail(1) %>% format("%X"), ')\n')
+      )
+      if (max_i$`Trade Time` %>% format("%X") %>% hms() < min_i$`Trade Time` %>% format("%X") %>% hms()) {
+         txt_tmp <- txt_tmp[c(1, 3, 2, 4)]
+      }
+      txt_tmp <- txt_tmp %>% paste(collapse = ', ')
+      txt <- paste(txt, txt_tmp, sep = '\n')
+   }
+} #end function
+
+# PACKAGES ----------------------------------------------------------------
 
 packages.list <- c('dplyr', 'quantmod', 'lubridate', 'stringr', 'gmailr', 'httr')
 new.packages <- packages.list[!(packages.list %in% installed.packages()[,'Package'])]
 if(length(new.packages)) {
-  install.packages(new.packages)
+   install.packages(new.packages)
 }
 lapply(packages.list, require, character.only = TRUE)
 
-httr::set_config( config( ssl_verifypeer = 0L ) )
-
-# MAIN FUNCTION -----------------------------------------------------------
-
-monitor <- function(
-  hora_inicio = "09:45:00",
-  dir.sav = "D:/Users/augusto.fadel/Documents/!filesync/stock_monitor_data", #"/home/augusto/Área de Trabalho/filesync/stock_monitor_data"
-  cod = cod, #codigos dos ativos (symbols)
-  set_up, #set point de alta
-  set_down, #set point de baixa
-  mail_from = "stockadvisor.alfa@gmail.com",
-  mail_to = c("augustofadel@gmail.com")
-) {
-  
-  arq <- file.path(dir.sav, paste0(format(Sys.time(), "%y%m%d"), ".rds"))
-  if (!file.exists(arq)) {
-    dat_acum <- NULL
-    lim_sup <- 0
-    lim_inf <- 0
-    
-    espera <- hora_inicio %>% hms() - format(Sys.time(), "%X") %>% hms()
-    if (espera %>% as.numeric() > 0) {
-      cat("\n", format(Sys.time(), "%X"), ": aguardando abertura... ")
-      Sys.sleep(espera %>% as.numeric())
-      cat("concluido.\n")
-    }
-  } else {
-    if (espera %>% as.numeric() < 0) {
-      stop("Arquivo com dados de ", format(Sys.time(), "%d/%m/%Y"), " encontrado (", format(Sys.time(), "%X"), ").")
-    }
-    dat_acum <- readRDS(arq)
-  }
-  
-  dat <- getQuote(cod)
-  dat_acum <- rbind(dat_acum, cbind(Symbol = rownames(dat) %>% str_sub(1, 5), dat))
-  rownames(dat_acum) <- NULL
-  txt <- NULL
-  
-  if (any((tail(dat_acum, length(cod))$`% Change` > set_up) != !(dat$`% Change` < set_up))) {
-    lim_sup <- 0
-  }
-  
-  if (any((tail(dat_acum, length(cod))$`% Change` < set_down * -1) != !(dat$`% Change` > set_down * -1))) {
-    lim_inf <- 0
-  }
-  
-  if (lim_sup == 0 & any(dat$`% Change` > set_up)) {
-    txt <- paste(txt, paste(rownames(dat)[dat$`% Change` > set_up], collapse = ", "), " (", paste0(dat$Last[dat$`% Change` > set_up], collapse = ", "), "; ", paste0(round(dat$`% Change`[dat$`% Change` > set_up], 2), "%", collapse = ", "), "; ", paste0(str_sub(dat$`Trade Time`, 12, 21)[dat$`% Change` > set_up], collapse = ", "), ").\n", sep = "")
-    lim_sup <- 1
-  }
-  if (lim_inf == 0 & any(dat$`% Change` < set_down * -1)) {
-    txt <- paste(txt, paste(rownames(dat)[dat$`% Change` < set_down * -1], collapse = ", "), " (", paste0(dat$Last[dat$`% Change` < set_down * -1], collapse = ", "), "; ", paste0(round(dat$`% Change`[dat$`% Change` < set_down * -1], 2), "%", collapse = ", "), "; ", paste0(str_sub(dat$`Trade Time`, 12, 21)[dat$`% Change` < set_down * -1], collapse = ", "), ").\n", sep = "")
-    lim_inf <- 1
-  }
-  # if (any(abs(dat$Last - dat$Low) == 0)) {
-  #   txt <- paste(txt, "\nOs seguintes papeis estao no minimo do dia: ", paste(rownames(dat)[abs(dat$Last - dat$Low) == 0], collapse = ", "), " (", paste(dat$Low[abs(dat$Last - dat$Low) == 0], collapse = " e "), ").\n", sep = "")
-  #   send_msg <- 1
-  # }
-  # if (any(abs(dat$Last - dat$High) == 0)) {
-  #   txt <- paste(txt, "\nOs seguintes papeis estao no maximo do dia: ", paste(rownames(dat)[abs(dat$Last - dat$High) == 0], collapse = ", "), " (", paste(dat$High[abs(dat$Last - dat$High) == 0], collapse = " e "), ").\n", sep = "")
-  #   send_msg <- 1
-  # }
-  
-  if (!is.null(txt)) {
-    txt <- paste0(txt, "\n\nObs.: Informacoes com atraso de 15 minutos.")
-    
-    msg <-
-      mime() %>% 
-      to(mail_to_1) %>% 
-      from(mail_from) %>% 
-      subject("ALERTA") %>% 
-      text_body(txt) %>% 
-      as.character()
-    
-    send_message(msg)
-  }
-  
-  saveRDS(dat_acum, file.path(dir.sav, paste0(format(Sys.time(), "%y%m%d"), ".rds")))
-  
-}
-
+httr::set_config(config(ssl_verifypeer = 0L))
 
 # CALL --------------------------------------------------------------------
 
-hora_fim = "18:30:00"
-intervalo = 60 * 5
-cod = c(
-  "CSNA3.SA", 
-  "USIM5.SA",
-  "GOAU4.SA",
-  "JBSS3.SA",
-  
-  "GGBR4.SA", 
-  "PETR4.SA",
-  "ELET3.SA",
-  "BRFS3.SA",
-  "EMBR3.SA"
-)
-
-while (format(Sys.time(), "%X") %>% hms() < hora_fim %>% hms()) {
-  
-  t <- system.time({
-    res <- try(
-      monitor(
-        set_up = 3, 
-        set_down = 4
-      ),
-      silent = T,
-      outFile = file.path(dir.sav, paste0("log_", format(Sys.time(), "%y%m%d"), ".txt"))
-    )
-  })
-  
-  if (class(res) == "try-error") {
-    cat("\nERRO (ver log).")
-  }
-  cat("\n", format(Sys.time(), "%X"), ": aguardando... ")
-  Sys.sleep(max(0, intervalo - t[[3]]))
-  cat("concluido.\n")
-}
-
-# monitor(set_up = 3, set_down = 4, mail_to = c("augustofadel@gmail.com", "dllima@petrobras.com.br"))
-
-txt <- NULL
-dat_acum <- 
-  readRDS(file.path(dir.sav, paste0(format(Sys.time(), "%y%m%d"), ".rds"))) %>% 
-  filter(dat_acum$`Trade Time` %>% 
-  str_sub(1,10) == paste0(format(Sys.time(), "%Y-%m-%d")))
-# min_idx <- tapply(dat_acum$Low, dat_acum$Symbol, which.min)
-# max_idx <- tapply(dat_acum$High, dat_acum$Symbol, which.max)
-for (i in cod) {
-  aux <- dat_acum %>% filter(Symbol == i)
-  min_i <- aux[which.min(aux$Low),]
-  max_i <- aux[which.max(aux$High),]
-  txt_tmp <- c(
-    paste0(i, ': ', aux$Open %>% tail(1)), 
-    paste0(min_i$Low, ' (', min_i$`Trade Time` %>% format("%X"), ')'),
-    paste0(max_i$High, ' (', max_i$`Trade Time` %>% format("%X"), ')'),
-    paste0(aux$Last %>% tail(1), ' (', aux$`Trade Time` %>% tail(1) %>% format("%X"), ')\n')
-  )
-  if (max_i$`Trade Time` %>% format("%X") %>% hms() < min_i$`Trade Time` %>% format("%X") %>% hms()) {
-    txt_tmp <- txt_tmp[c(1, 3, 2, 4)]
-  }
-  txt_tmp <- txt_tmp %>% paste(collapse = ', ')
-  txt <- paste(txt, txt_tmp, sep = '\n')
-}
-
-txt <- paste0(txt, '\n\nObs.: O horarios de maximo e minimo sao aproximados (atraso de ate 5 minutos).')
-
-msg <-
-  mime() %>% 
-  to(mail_to_1) %>% 
-  from(mail_from) %>% 
-  subject(paste("Informe diario:", format(Sys.time(), "%d/%m/%Y"))) %>% 
-  text_body(txt) %>% 
-  as.character()
-
-send_message(msg)
-
-# msg <-
-#   mime() %>% 
-#   to(mail_to_2) %>% 
-#   from(mail_from) %>% 
-#   subject(paste("Informe diario:", format(Sys.time(), "%d/%m/%Y"))) %>% 
-#   text_body(txt) %>% 
-#   as.character()
-# 
-# send_message(msg)
+monitor()
